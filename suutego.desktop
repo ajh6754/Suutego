@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=Krita/PythonPlugin
+X-KDE-Library=suutego
+X-Python-2-Compatible=false
+X-Krita-Manual=suutego_manual.html
+Name=Suutego
+Comment=The Suutego tool.
