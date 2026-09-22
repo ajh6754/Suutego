@@ -48,13 +48,16 @@ class SuutegoExtension(Extension):
             self.ran_without_doc()
             return
 
+        # information message if needed
+        information_message = "This is Suutego"
+
         # obtain all top level nodes, need to check for groups of layers
         top_level_nodes = doc.topLevelNodes()
 
         # list of layers to determine path, encode, and decode
         layers = self.obtain_all_layers(top_level_nodes)
 
-        # color model (CMYKA, RGBA, GRAYA, YCbCrA, LABA, XYZA)
+        # color model (RGBA, CMYKA, GRAYA, YCbCrA, LABA, XYZA)
         color_model = doc.colorModel()
 
         # get bounds
@@ -71,7 +74,7 @@ class SuutegoExtension(Extension):
         msg_box.setWindowTitle("Suutego")
         msg_box.setText("Welcome to Suutego.")
         # consider updates of "message present" or somethin here
-        msg_box.setInformativeText("You can display status updates or warnings here.")
+        msg_box.setInformativeText(information_message)
         # maybe an icon?
         msg_box.setIcon(QMessageBox.Information)
         # need buttons like Encode, Decode... text box to encode, etc.
@@ -107,7 +110,7 @@ class SuutegoExtension(Extension):
                 bytes_array = bytearray(pixel_data)
 
                 # now append the raw bitmap
-                layers.append({"bytes_array" : bytes_array, "x" : starting_x, "y" : starting_y})
+                layers.append({"bytes_array" : bytes_array, "x" : starting_x, "y" : starting_y, "width" : width, "height" : height, "id" : node.uniqueId()})
 
         return layers
 
