@@ -1,4 +1,4 @@
-# Suutego　(数テゴ)
+# Suutego (数テゴ)
 
 Suutego is meant to be a Krita plugin (may branch out to other applications) for message hiding in multi-layer raster image formats.
 

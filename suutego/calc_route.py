@@ -16,21 +16,14 @@ def calc_route(layers : list, width : int, height : int, color_space : str):
         @param color_space  - could be RGBA or CMYKA or more
         @param password     - if the user desires a password for 
     """
-    # first establish how many color channels we have to deal with
-    
-
     # calculate pixels/layers we CAN change, and then pixels we shouldn't
-
-    # would probably be best to apply HILL? well we can probably do that later
-    # 
-
-    route = hill.HILL_algo(layers, color_space)
+    maps = hill.HILL_algo(layers, color_space)
 
     # obtain traversal seed
     traversal_seed = calc_traversal_seed(layers)
 
     # return the traversal seed + possible stuff ot do
-    return route, traversal_seed
+    return maps, traversal_seed
 
 def calc_traversal_seed(layers : list):
     """ Calculate the PRNG traversal seed (hash) with the width and height of each layer

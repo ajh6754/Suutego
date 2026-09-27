@@ -1,3 +1,21 @@
+""" 
+Filename: hill.py
+
+This runs a modified HILL strategy.
+
+first identify all possible pixels by running modified HILL on ALL pixels
+    modified HILL will ignore all LSB of every color channel, which works out for encoder/decoder
+    modified HILL will run on every channel independently then pick the best (least) cost channel
+        ALWAYS ignore the alpha (last)
+
+then use the seeded PRNG to iterate through those candidates semi-randomly
+
+future work: implementing something like GINA-HILL that concerns all 3 channels
+- there is an added complexity with layered images so that might also require hefty research
+
+@author Albert Jiro Hynes
+"""
+
 import scipy.signal
 import numpy as np
 
@@ -24,46 +42,37 @@ for i in range(0,15):
     L_2.append(row)
 
 
+# minimum variance to be considered for HILL
+MIN_VARIANCE = 1.0
+
+
+# did this so we had less computations to do
+TEN_POWER_ADD = 10**(-10)
+
 def HILL_cost(layer_matrix):                                                                                        
     """ HILL cost function
     """
-    # 
-
-    # following is ripped from https://github.com/daniellerch/stegolab/blob/master/HILL/HILL.py
     R1 = scipy.signal.convolve2d(layer_matrix, H, mode='same', boundary='symm')
     W1 = scipy.signal.convolve2d(np.abs(R1), L_1, mode='same', boundary='symm')
-    rho = 1./(W1+10**(-10))
+    rho = 1./(W1+TEN_POWER_ADD)
     cost = scipy.signal.convolve2d(rho, L_2, mode='same', boundary='symm')
+
+    # now that we have costs, filter out the pure black/transparent/empty pixels
+    cost[layer_matrix == 0] = np.inf
+
     return cost 
 
-# what is the HILL Strategy?
 
-# first identify all possible pixels by running modified hill on ALL pixels
-    # modified HILL will ignore all LSB of every color channel, which works out for encoder/decoder
-    # modified HILL will run on every channel independently then pick the best (least) cost channel
-        # ALWAYS ignore the alpha (last)
-
-# then use the seeded PRNG to iterate through those candidates semi-randomly
-
-
-def HILL_algo(layers, color_model):
-    """ This function deals with identifying what pixels in each layer to change (in order)
+def HILL_algo(layers, color_model, test=None):
+    """ This function deals with identifying what pixels in each layer to change
     
         @param layers       - list of dictionaries of bytestrings and positions in image
-        @param num_channels - number of color channels in image
+        @param color_model  - color model we're working with
+        @param test         - var to indicate visual test rather than actual stego
     """
-    # for sake of simplicity, compromising with only B in RGB and only Y in CMYK
-    
-    # OR, doing all 3 (still ignoring grayscale), jumping around all of those
-
-    # for human detection, changes to blue are most imperceptible
-    # if grayscale, then flip all relevant bits
-    # this reduces the number of bits, but that's fine- not getting caught is more important
-    # future work: implementing something like GINA-HILL
-
-    # dictionary to hold layers + which pixels (and channel) to flip 
-    # ex. {"layer_id" : [(x,y,channel_index)]}
-    alter_candidates = {}
+    # dictionaries to hold layers + which pixels (and channel) to flip 
+    # ex. {"layer_id" : map}
+    maps = {}
 
     for layer in layers:
         # get the layer info
@@ -74,18 +83,89 @@ def HILL_algo(layers, color_model):
         # split the image into its channels
         channel_arrays = convert_layer_to_2d_arr(bytes_array, width, height, color_model)
 
-        # feed each channel into HILL
+        # determine if the layer is acceptable, feed into HILL if so
         HILL_cost_matrix = {}
         for key in channel_arrays.keys():
-            HILL_cost_matrix[key] = HILL_cost(channel_arrays[key])
-            print(HILL_cost_matrix[key])
+            array_variance = np.var(channel_arrays[key])
+            
+            # if good, feed channel into HILL
+            if(array_variance >= MIN_VARIANCE):
+                HILL_cost_matrix[key] = HILL_cost(channel_arrays[key])
 
-        # now, identify all coordinate pairs and channel to alter
+        # if the whole layer fails then leave
+        if(len(HILL_cost_matrix.keys()) == 0):
+            continue
+
+        # get the aggregate min cost across all color channels
+        cost_channels = list(HILL_cost_matrix.values())
+        agg_cost_map = np.sqrt(np.sum([C**2 for C in cost_channels], axis=0))
+        valid_costs = agg_cost_map[agg_cost_map < np.inf]
+
+        # if the whole layer fails then leave
+        if(len(valid_costs) == 0):
+            continue
+
+        # else we declare the minimum cost across all channels
+        c_min = np.min(valid_costs)
+
+        # after determining the min, declare bounds
+
+        # Strategy: Best candidates have cost =< c_min * 1.5 and cost > 0
+        # Ok candidates have cost < c_min * 3 and cost > 1.5... or something like that
+        # literally anything beyond that is bad
+
+        best_cost_upper_bound = c_min * 1.5
+        ok_cost_upper_bound = c_min * 3
+
+        # now get the cost stack across all channels, obtain mins per channel
+        cost_stack = np.stack(list(HILL_cost_matrix.values()), axis=-1)
+        min_channel_map = np.argmin(cost_stack, axis=-1)
+
+        # stack the channels together to just get the MSB stack 
+        channel_msb_stack = np.stack(list(channel_arrays.values()), axis=-1)
+
+        # create nice masks for speed/simplicity
+        best_mask = (agg_cost_map <= best_cost_upper_bound) & (agg_cost_map < np.inf)
+        ok_mask = (agg_cost_map > best_cost_upper_bound) & (agg_cost_map <= ok_cost_upper_bound) & (agg_cost_map < np.inf)
+
+        # perform a grayscale check on most significant 7 bits, to act as a mask
+        is_grayscale = np.all(channel_msb_stack == channel_msb_stack[..., :1], axis=-1)
+
+        # based on this construct a final target action 2d map, -1 = don't touch
+        target_action_map = np.full(agg_cost_map.shape, -1, dtype=int)
+
+        ###
+        ### BEST BUCKET
+        ###
+
+        # determine best color based on minimum channel index (0, 1, 2...)
+        # ignoring grayscale
+        best_color = best_mask & (~is_grayscale)
+        target_action_map[best_color] = min_channel_map[best_color]
         
+        # for grayscale, assign code 318
+        best_gray = best_mask & is_grayscale
+        target_action_map[best_gray] = 318
 
+        ###
+        ### OK BUCKET
+        ###
 
-    # for any grayscale (all color values are equal and in (0,255)), flip every LSB
-    return None
+        # determine best color based on minimum channel index (0, 1, 2...)
+        # ignoring grayscale
+        ok_color = ok_mask & (~is_grayscale)
+        target_action_map[ok_color] = min_channel_map[best_color]
+        
+        # for grayscale, assign code 243
+        ok_gray = ok_mask & is_grayscale
+        target_action_map[ok_gray] = 243
+
+        ###
+        ### ADD TO CANDIDATE LIST
+        ###
+        maps[layer["id"]] = target_action_map
+
+    return maps
 
 def convert_layer_to_2d_arr(bytes_array, width, height, color_model):
     """ function to convert the bytearray into 2D arrays (1 for each channel, ignore alpha)
