@@ -63,16 +63,19 @@ def HILL_cost(layer_matrix):
     return cost 
 
 
-def HILL_algo(layers, color_model, test=None):
+def HILL_algo(layers, color_model):
     """ This function deals with identifying what pixels in each layer to change
     
         @param layers       - list of dictionaries of bytestrings and positions in image
         @param color_model  - color model we're working with
-        @param test         - var to indicate visual test rather than actual stego
     """
     # dictionaries to hold layers + which pixels (and channel) to flip 
     # ex. {"layer_id" : map}
     maps = {}
+
+    # information variables
+    total_best_sum = 0
+    total_ok_sum = 0
 
     for layer in layers:
         # get the layer info
@@ -154,7 +157,7 @@ def HILL_algo(layers, color_model, test=None):
         # determine best color based on minimum channel index (0, 1, 2...)
         # ignoring grayscale
         ok_color = ok_mask & (~is_grayscale)
-        target_action_map[ok_color] = min_channel_map[best_color]
+        target_action_map[ok_color] = min_channel_map[ok_color]
         
         # for grayscale, assign code 243
         ok_gray = ok_mask & is_grayscale
@@ -165,7 +168,52 @@ def HILL_algo(layers, color_model, test=None):
         ###
         maps[layer["id"]] = target_action_map
 
-    return maps
+
+        ###
+        ### SUMMARY
+        ###
+
+        total_pixels = target_action_map.size 
+        # 1. Count discarded / untouched pixels
+        untouched_count = np.sum(target_action_map == -1)
+
+        # 2. Count Best Candidates (Color channels 0, 1, 2... and Grayscale 99)
+        best_color_count = np.sum((target_action_map >= 0) & (target_action_map < 10))
+        best_gray_count  = np.sum(target_action_map == 318)
+        total_best       = best_color_count + best_gray_count
+
+        # 3. Count OK Candidates (Color channels 10, 11, 12... and Grayscale 98)
+        ok_color_count   = np.sum((target_action_map >= 10) & (target_action_map <= 13))
+        ok_gray_count    = np.sum(target_action_map == 243)
+        total_ok         = ok_color_count + ok_gray_count
+
+        # 4. Total available payload capacity (in bits/pixels)
+        total_candidates = total_best + total_ok
+
+        print("--- HILL TARGET ACTION MAP SUMMARY ---")
+        print(f"Layer id            : {layer["id"]}")
+        print(f"Total Canvas Pixels : {total_pixels:,}")
+        print(f"Untouched / Discard : {untouched_count:,} ({untouched_count/total_pixels:.2%})")
+        print(f"Best Color Pixels   : {best_color_count:,}")
+        print(f"Best Grayscale      : {best_gray_count:,}")
+        print(f"TOTAL BEST POOL     : {total_best:,} ({total_best/total_pixels:.2%})")
+        print(f"OK Color Pixels     : {ok_color_count:,}")
+        print(f"OK Grayscale        : {ok_gray_count:,}")
+        print(f"TOTAL OK POOL       : {total_ok:,} ({total_ok/total_pixels:.2%})")
+        print(f"Total Embed Capacity: {total_candidates:,} pixels ({total_candidates/total_pixels:.2%})")
+
+        total_best_sum += total_best
+        total_ok_sum += total_ok
+
+    total_sum = total_best_sum + total_ok_sum
+
+    print()
+    print("--- HILL TOTAL SUMMARY ---")
+    print(f"Total best pixels:       : {total_best_sum}")
+    print(f"Total ok pixels:         : {total_ok_sum}")
+    print(f"Total pixels:            : {total_sum}")
+
+    return maps, total_best_sum, total_ok_sum
 
 def convert_layer_to_2d_arr(bytes_array, width, height, color_model):
     """ function to convert the bytearray into 2D arrays (1 for each channel, ignore alpha)
@@ -209,82 +257,3 @@ def convert_layer_to_2d_arr(bytes_array, width, height, color_model):
 
     return color_channels
 
-    
-### TODO
-"""
-- converting to 2d array function (done)
-- no LSB hill algorithm on all 3-4 channels (ignore alpha)
-    - select best channel
-- return all pixels we can flip
-"""
-
-"""
-"""
-    
-
-# def old_algo(layers, num_channels):
-    # establish channels we can do
-    # channel_list = []
-    # for i in range(0,num_channels-1):
-    #     channel_list.append[i]
-
-    # for layer in layers:
-    #     # do a simple 3x3 spatial entropy approach for now and see how it goes...
-
-    #     # get the layer info
-    #     bytes_array = layer["bytes_array"]
-    #     width = layer["width"] - 1
-    #     height = layer["height"] - 1
-
-    #     # for all x,y coords in the layer, determine if it's worth using
-    #     for y in range(1, height):
-    #         for x in range(1, width):
-    #             index = ((y * width) + x) * num_channels
-    #             pixel_color_channels = []
-
-    #             # extract channel values
-    #             for i in range(0,len(channel_list)):
-    #                 pixel_color_channels.append(bytes_array[index + i])
-
-    #             # check if it's grayscale or 0/255
-    #             is_uniform = len(set(pixel_color_channels)) == 1
-
-    #             # first check if this is a 0,0,0 or 255,255,255- ignore if so
-    #             if(is_uniform and pixel_color_channels[0] % 255 == 0):
-    #                 continue
-
-    #             # now see what we should flip- if grayscale then do all
-
-
-    # for any grayscale (all color values are equal and in (0,255)), flip every LSB
-
-    # return type: {layer_id : [(x,y,{0 || 1 || 2 || 3})], ...]}
-
-    # return None
-
-# def get_pixel_channel_val(data: bytearray, width: int, x: int, y: int, num_channels: int, channel_idx: int):
-#     """ returns byte value at (x, y) for a specific channel
-#     """
-#     return data[(y * width + x) * num_channels + channel_idx]
-
-# def calculate_local_entropy(data: bytearray, width: int, height: int, x: int, y: int, num_channels: int, channel_idx: int, radius: int = 1):
-#     """ calculates Shannon entropy in a local (2*radius + 1) neighborhood for a specific channel
-#     """
-#     neighborhood_vals = []
-    
-#     # Extract values from the surrounding bounding box
-#     for ny in range(max(0, y - radius), min(height, y + radius + 1)):
-#         for nx in range(max(0, x - radius), min(width, x + radius + 1)):
-#             val = get_pixel_channel_val(data, width, nx, ny, num_channels, channel_idx)
-#             neighborhood_vals.append(val)
-            
-#     # Calculate Shannon Entropy: H = -sum(P(x) * log2(P(x)))
-#     total_pixels = len(neighborhood_vals)
-#     counts = Counter(neighborhood_vals)
-    
-#     entropy = 0.0
-#     for count in counts.values():
-#         p = count / total_pixels
-#         entropy -= p * math.log2(p)
-        
-#     return entropy

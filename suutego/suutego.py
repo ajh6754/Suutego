@@ -66,7 +66,7 @@ class SuutegoExtension(Extension):
         doc_height = doc_bounds.height()
 
         # pass layers into calc_route.py, layers are in reverse order of precedence
-        route, seed = calc_route.calc_route(layers, doc_width, doc_height, color_model)
+        route, seed, num_best, num_ok = calc_route.calc_route(layers, doc_width, doc_height, color_model)
 
         # EDIT LATER: to become the Suutego prompt
         main_window = Krita.instance().activeWindow().qwindow()
