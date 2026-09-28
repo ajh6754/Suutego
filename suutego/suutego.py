@@ -9,12 +9,201 @@ Purpose:    To act as the Suutego initial load (grab all layers/bitmaps) before
 """
 
 from krita import Krita, Extension
-from PyQt5.QtWidgets import QMessageBox
+from PyQt5.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QTabWidget, 
+    QTextEdit, QLineEdit, QPushButton, QGroupBox, QMessageBox, QWidget
+)
+from PyQt5.QtCore import Qt
 from . import calc_route, crypto
+
+"""
+TODO
+
+- encoding
+
+- decoding
+
+"""
 
 ###
 ### CLASSES
 ###
+
+class SuutegoDialog(QDialog):
+    def __init__(self, parent, layers, doc_width, doc_height, color_model):
+        super().__init__(parent)
+        self.setWindowTitle("Suutego - Multi-Layer Steganography Tool")
+        self.resize(580, 550)
+        
+        # krita file data
+        self.layers = layers
+        self.doc_width = doc_width
+        self.doc_height = doc_height
+        self.color_model = color_model
+
+        # state stored after calc_route executes
+        self.route_calculated = False
+        self.maps = None
+        self.seed = None
+        self.num_best = 0
+        self.num_ok = 0
+        self.max_chars = 0
+        
+        self.init_ui()
+
+    def init_ui(self):
+        main_layout = QVBoxLayout()
+
+        # first verify that the user wants to do this
+        analysis_group = QGroupBox("Perform modified HILL Route Analysis")
+        analysis_layout = QVBoxLayout()
+        
+        intro_lbl = QLabel(
+            "Before embedding or decoding, run the modified HILL algorithm to "
+            "identify usable target pixels across all active layers."
+        )
+        intro_lbl.setWordWrap(True)
+        analysis_layout.addWidget(intro_lbl)
+
+        btn_layout = QHBoxLayout()
+        self.btn_run_hill = QPushButton("Analyze Active File")
+        self.btn_run_hill.clicked.connect(self.run_hill_analysis)
+        btn_layout.addWidget(self.btn_run_hill)
+        analysis_layout.addLayout(btn_layout)
+
+        # seeing capacity
+        self.stats_label = QLabel("<i>Status: Route analysis pending...</i>")
+        self.stats_label.setTextFormat(Qt.RichText)
+        analysis_layout.addWidget(self.stats_label)
+
+        analysis_group.setLayout(analysis_layout)
+        main_layout.addWidget(analysis_group)
+
+        # now create tabs for encoding and decoding
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self.create_encode_tab(), "Encode")
+        self.tabs.addTab(self.create_decode_tab(), "Decode")
+        self.tabs.setEnabled(False)  # Require verification first
+        
+        main_layout.addWidget(self.tabs)
+        self.setLayout(main_layout)
+
+    def run_hill_analysis(self):
+        """ Runs calc_route after explicit user confirmation 
+        """
+        reply = QMessageBox.question(
+            self, 
+            "Confirm Route Calculation",
+            "Perform HILL analysis on the current image layers now?",
+            QMessageBox.Yes | QMessageBox.No, 
+            QMessageBox.Yes
+        )
+
+        if reply == QMessageBox.Yes:
+            # route calculation
+            self.maps, self.seed, self.num_best, self.num_ok = calc_route.calc_route(
+                self.layers, self.doc_width, self.doc_height, self.color_model
+            )
+            self.route_calculated = True
+
+            # update the UI for stats on how much we can add
+            # the first 4 bytes will be a signature, next 4 is length of message, then payload
+
+            total_avail = self.num_best + self.num_ok - 8
+            approx_best_bytes = (self.num_best // 8) - 8
+            approx_bytes = (total_avail // 8) - 8
+            self.max_chars = approx_bytes
+
+            # if there literally isn't enough for a payload then stop here
+            if(total_avail <= 0):
+                self.stats_label.setText(
+                    f"<b>This file is not suitable for a message using Suutego.</b><br>"
+                    f"Please pick another file or draw."
+                )
+            else:
+                stats_string = f"<b>Best Pixels:</b> {self.num_best:,} | <b>Total Available:</b> {total_avail:,}<br>" + \
+                        f"<b>Est. Best Only Max Capacity:</b> ~{approx_best_bytes:,} characters<br>" + \
+                        f"<b>Est. Total Payload Capacity:</b> ~{approx_bytes:,} characters"
+
+                if(approx_best_bytes < 10):
+                    stats_string += f"<br><br>Since there are very little good candidates for stego, " + \
+                                    "you should<br>probably use a different file or draw."
+
+                self.stats_label.setText(stats_string)
+
+                # NOW unlock encode/decode
+                self.tabs.setEnabled(True)
+
+            # if desired this can be re-analyzed although there is little purpose
+            self.btn_run_hill.setText("Re-analyze Image")
+
+    def create_encode_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout()
+
+        layout.addWidget(QLabel("Message to Embed:"))
+        self.encode_text = QTextEdit()
+        self.encode_text.setPlaceholderText("Enter secret message here...")
+        layout.addWidget(self.encode_text)
+
+        # TODO consider password
+        # layout.addWidget(QLabel("Passphrase (Optional):"))
+        # self.encode_key = QLineEdit()
+        # self.encode_key.setEchoMode(QLineEdit.Password)
+        # layout.addWidget(self.encode_key)
+
+        btn_encode = QPushButton("Encode Payload into Image")
+        btn_encode.clicked.connect(self.on_encode_click)
+        layout.addWidget(btn_encode)
+
+        widget.setLayout(layout)
+        return widget
+
+    def create_decode_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout()
+
+        # TODO consider passwords
+        # layout.addWidget(QLabel("Passphrase (If encrypted):"))
+        # self.decode_key = QLineEdit()
+        # self.decode_key.setEchoMode(QLineEdit.Password)
+        # layout.addWidget(self.decode_key)
+
+        btn_decode = QPushButton("Scan & Extract Message")
+        btn_decode.clicked.connect(self.on_decode_click)
+        layout.addWidget(btn_decode)
+
+        layout.addWidget(QLabel("Extracted Payload:"))
+        self.decode_text = QTextEdit()
+        self.decode_text.setReadOnly(True)
+        layout.addWidget(self.decode_text)
+
+        widget.setLayout(layout)
+        return widget
+
+    def on_encode_click(self):
+        message = self.encode_text.toPlainText()
+
+        if not message:
+            QMessageBox.warning(self, "Warning", "Please enter a message to encode.")
+            return
+
+        # encode
+        # success = crypto.encode(message, self.maps, self.seed)
+        
+        QMessageBox.information(self, "Success", "Message successfully embedded into active layers!")
+        self.accept()
+
+    def on_decode_click(self):
+        # decode
+        # extracted_msg = crypto.decode(self.maps, self.seed)
+        extracted_msg = "Sample decoded message from stego pixels."
+
+        if extracted_msg:
+            self.decode_text.setPlainText(extracted_msg)
+            QMessageBox.information(self, "Found", "Message successfully decoded!")
+        else:
+            QMessageBox.warning(self, "Failed", "No hidden message found or incorrect passphrase.")
 
 class SuutegoExtension(Extension):
 
@@ -65,21 +254,10 @@ class SuutegoExtension(Extension):
         doc_width = doc_bounds.width()
         doc_height = doc_bounds.height()
 
-        # pass layers into calc_route.py, layers are in reverse order of precedence
-        route, seed, num_best, num_ok = calc_route.calc_route(layers, doc_width, doc_height, color_model)
-
-        # EDIT LATER: to become the Suutego prompt
-        main_window = Krita.instance().activeWindow().qwindow()
-        msg_box = QMessageBox(main_window)
-        msg_box.setWindowTitle("Suutego")
-        msg_box.setText("Welcome to Suutego.")
-        # consider updates of "message present" or somethin here
-        msg_box.setInformativeText(information_message)
-        # maybe an icon?
-        msg_box.setIcon(QMessageBox.Information)
-        # need buttons like Encode, Decode... text box to encode, etc.
-        msg_box.setStandardButtons(QMessageBox.Ok)
-        msg_box.exec()
+        # Launch Custom UI Prompt
+        main_window = app.activeWindow().qwindow()
+        dialog = SuutegoDialog(main_window, layers, doc_width, doc_height, color_model)
+        dialog.exec_()
 
     def obtain_all_layers(self, nodes):
         """ Recursive function to grab all relevant layers, convert to bitmap
