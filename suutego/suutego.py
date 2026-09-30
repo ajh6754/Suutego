@@ -17,11 +17,20 @@ from PyQt5.QtCore import Qt
 from . import calc_route, crypto
 
 """
-TODO
+TODO (in order)
 
-- encoding
+- encoding, decoding
+    - at present just normal image layers
+        - HILL improvement - try to prioritize 10-12k or below per layer
+    - other layer types later on
 
-- decoding
+- use of other layer types (really upgrades this to a "can't just do this on PNG" level)
+    - Vector layer (comic strip shapes, logo, noncomlpex art, calliigraphy)
+        - approach: Dicrete Wavelet Transform?
+        - still using randomized traversal + encryption
+    - Fill layer?
+        - 
+    - filter mask?
 
 """
 
@@ -30,24 +39,27 @@ TODO
 ###
 
 class SuutegoDialog(QDialog):
-    def __init__(self, parent, layers, doc_width, doc_height, color_model):
+    def __init__(self, parent, paint_layers, vector_layers, local_id_layer_mappings, doc_width, doc_height, color_model):
         super().__init__(parent)
         self.setWindowTitle("Suutego - Multi-Layer Steganography Tool")
         self.resize(580, 550)
         
         # krita file data
-        self.layers = layers
+        self.paint_layers = paint_layers
+        self.vector_layers = vector_layers
+        self.local_id_layer_mappings = local_id_layer_mappings
         self.doc_width = doc_width
         self.doc_height = doc_height
         self.color_model = color_model
 
-        # state stored after calc_route executes
-        self.route_calculated = False
-        self.maps = None
+        # state stored after calculating route
         self.seed = None
-        self.num_best = 0
-        self.num_ok = 0
-        self.max_chars = 0
+        self.layers_analyzed = False
+        self.paint_layer_buckets = None
+        self.num_paint_best = 0
+        self.num_paint_next_best = 0
+        self.num_paint_ok = 0
+        self.paint_max_chars = 0
         
         self.init_ui()
 
@@ -72,7 +84,7 @@ class SuutegoDialog(QDialog):
         analysis_layout.addLayout(btn_layout)
 
         # seeing capacity
-        self.stats_label = QLabel("<i>Status: Route analysis pending...</i>")
+        self.stats_label = QLabel("Status: Route analysis pending...")
         self.stats_label.setTextFormat(Qt.RichText)
         analysis_layout.addWidget(self.stats_label)
 
@@ -89,30 +101,37 @@ class SuutegoDialog(QDialog):
         self.setLayout(main_layout)
 
     def run_hill_analysis(self):
-        """ Runs calc_route after explicit user confirmation 
+        """ Runs calc_paint_layers after explicit user confirmation 
         """
         reply = QMessageBox.question(
             self, 
             "Confirm Route Calculation",
-            "Perform HILL analysis on the current image layers now?",
+            "Perform analysis on the current image layers now?",
             QMessageBox.Yes | QMessageBox.No, 
             QMessageBox.Yes
         )
 
-        if reply == QMessageBox.Yes:
-            # route calculation
-            self.maps, self.seed, self.num_best, self.num_ok = calc_route.calc_route(
-                self.layers, self.doc_width, self.doc_height, self.color_model
+        if(reply == QMessageBox.Yes):
+            # paint layer calculation
+            self.paint_layer_buckets = calc_route.calc_paint_layers(
+                self.paint_layers, self.local_id_layer_mappings, self.color_model
             )
-            self.route_calculated = True
+            self.layers_analyzed = True
+
+            # get stats
+            self.num_paint_best = len(self.paint_layer_buckets["best"])
+            self.num_paint_next_best = len(self.paint_layer_buckets["next_best"])
+            self.num_paint_ok = len(self.paint_layer_buckets["ok"]) + len(self.paint_layer_buckets["next_ok"])
+            total_avail = self.num_paint_best + self.num_paint_next_best + self.num_paint_ok
 
             # update the UI for stats on how much we can add
             # the first 4 bytes will be a signature, next 4 is length of message, then payload
 
-            total_avail = self.num_best + self.num_ok - 8
-            approx_best_bytes = (self.num_best // 8) - 8
+            total_avail = total_avail - 8
+            approx_best_bytes = (self.num_paint_best // 8) - 8
+            approx_next_best_bytes = ((self.num_paint_best + self.num_paint_next_best) // 8) - 8
             approx_bytes = (total_avail // 8) - 8
-            self.max_chars = approx_bytes
+            self.paint_max_chars = approx_bytes
 
             # if there literally isn't enough for a payload then stop here
             if(total_avail <= 0):
@@ -121,8 +140,9 @@ class SuutegoDialog(QDialog):
                     f"Please pick another file or draw."
                 )
             else:
-                stats_string = f"<b>Best Pixels:</b> {self.num_best:,} | <b>Total Available:</b> {total_avail:,}<br>" + \
+                stats_string = f"<b>Best Pixels:</b> {self.num_paint_best:,} | <b>Total Available:</b> {total_avail:,}<br>" + \
                         f"<b>Est. Best Only Max Capacity:</b> ~{approx_best_bytes:,} characters<br>" + \
+                        f"<b>Est. Next Best Max Capacity:</b> ~{approx_next_best_bytes:,} characters<br>" + \
                         f"<b>Est. Total Payload Capacity:</b> ~{approx_bytes:,} characters"
 
                 if(approx_best_bytes < 10):
@@ -237,14 +257,11 @@ class SuutegoExtension(Extension):
             self.ran_without_doc()
             return
 
-        # information message if needed
-        information_message = "This is Suutego"
-
         # obtain all top level nodes, need to check for groups of layers
         top_level_nodes = doc.topLevelNodes()
 
         # list of layers to determine path, encode, and decode
-        layers = self.obtain_all_layers(top_level_nodes)
+        paint_layers, vector_layers = self.obtain_all_layers(top_level_nodes)
 
         # color model (RGBA, CMYKA, GRAYA, YCbCrA, LABA, XYZA)
         color_model = doc.colorModel()
@@ -254,22 +271,41 @@ class SuutegoExtension(Extension):
         doc_width = doc_bounds.width()
         doc_height = doc_bounds.height()
 
+        # create local id to Krita layer ID mappings (speedup later)
+        index = 0
+        local_id_layer_mappings = {}
+        for layer_list in [paint_layers, vector_layers]:
+            for layer in layer_list:
+                local_id_layer_mappings[index] = layer["id"]
+                local_id_layer_mappings[layer["id"]] = index
+                index += 1
+
         # Launch Custom UI Prompt
         main_window = app.activeWindow().qwindow()
-        dialog = SuutegoDialog(main_window, layers, doc_width, doc_height, color_model)
+        dialog = SuutegoDialog(main_window, paint_layers, vector_layers, local_id_layer_mappings, doc_width, doc_height, color_model)
         dialog.exec_()
 
     def obtain_all_layers(self, nodes):
         """ Recursive function to grab all relevant layers, convert to bitmap
+
+            TODO separate logic for non color/paint layers:
+                - transparency masks?
+                - alpha mask? prob not
+                - vector layers
+                - filter layers
         """
-        layers = []
+        paint_layers = []
+        vector_layers = []
 
         for node in nodes:
             # get the children, if there are none then we're done
             node_children = node.childNodes()
 
             if(len(node_children) > 0):
-                layers.extend(self.obtain_all_layers(node_children))
+                new_paint_layers, new_vector_layers = self.obtain_all_layers(node_children)
+                paint_layers.extend(new_paint_layers)
+                vector_layers.extend(new_vector_layers)
+            
             elif(node.type() == "paintlayer"):
                 # get pixel data
                 bounds = node.bounds()
@@ -288,9 +324,32 @@ class SuutegoExtension(Extension):
                 bytes_array = bytearray(pixel_data)
 
                 # now append the raw bitmap
-                layers.append({"bytes_array" : bytes_array, "x" : starting_x, "y" : starting_y, "width" : width, "height" : height, "id" : node.uniqueId()})
+                paint_layers.append({"bytes_array" : bytes_array, "x" : starting_x, "y" : starting_y, "width" : width, "height" : height, "id" : node.uniqueId()})
+            
+            elif(node.type() == "vectorlayer"):
+                # get all vector shapes inside this layer, if we have none skip 
+                shapes = node.shapes()
 
-        return layers
+                if(len(shapes) == 0):
+                    print(f"Layer '{node.name()}' is empty, ignoring...")
+                    continue
+
+                # get an ordered list of shapes turned to SVG
+                svg_list = []
+
+                for shape in shapes:
+                    svg_list.append(shape.toSvg())
+
+                # grab the SVG representing this vector layer
+                vector_layers.append({"svg_list" : svg_list, "id" : node.uniqueId()})
+
+            elif(node.type() == "filllayer"):
+                print("TODO")
+
+            elif(node.type() == "filtermask"):
+                print("TODO")
+
+        return paint_layers, vector_layers
 
     def ran_without_doc(self):
         """ Flash a warning if a user attempts to run without having an active document open

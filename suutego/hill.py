@@ -63,15 +63,18 @@ def HILL_cost(layer_matrix):
     return cost 
 
 
-def HILL_algo(layers, color_model):
+def HILL_algo(layers, local_id_map, color_model):
     """ This function deals with identifying what pixels in each layer to change
     
         @param layers       - list of dictionaries of bytestrings and positions in image
+        @param local_id_map - dictionary mapping id to local id, and vice versa
         @param color_model  - color model we're working with
     """
-    # dictionaries to hold layers + which pixels (and channel) to flip 
-    # ex. {"layer_id" : map}
-    maps = {}
+    # buckets, going from .1 bpp, to next best after that, then 
+    best_bucket = []
+    next_best_bucket = []
+    ok_bucket = []
+    next_ok_bucket = []
 
     # information variables
     total_best_sum = 0
@@ -79,6 +82,7 @@ def HILL_algo(layers, color_model):
 
     for layer in layers:
         # get the layer info
+        local_layer_index = local_id_map[layer["id"]]
         bytes_array = layer["bytes_array"]
         width = layer["width"]
         height = layer["height"]
@@ -163,35 +167,93 @@ def HILL_algo(layers, color_model):
         ok_gray = ok_mask & is_grayscale
         target_action_map[ok_gray] = 243
 
-        ###
-        ### ADD TO CANDIDATE LIST
-        ###
-        maps[layer["id"]] = target_action_map
-
 
         ###
         ### SUMMARY
         ###
 
         total_pixels = target_action_map.size 
-        # 1. Count discarded / untouched pixels
+        num_channels = len(channel_arrays.keys())
+
+        # 1. count discarded / untouched pixels
         untouched_count = np.sum(target_action_map == -1)
 
-        # 2. Count Best Candidates (Color channels 0, 1, 2... and Grayscale 99)
+        # 2. count Best Candidates (Color channels 0, 1, 2... and Grayscale 99)
         best_color_count = np.sum((target_action_map >= 0) & (target_action_map < 10))
         best_gray_count  = np.sum(target_action_map == 318)
         total_best       = best_color_count + best_gray_count
 
-        # 3. Count OK Candidates (Color channels 10, 11, 12... and Grayscale 98)
+        # for HILL, want to stay under .2 bpp
+
+        # 3. count OK Candidates (Color channels 10, 11, 12... and Grayscale 98)
         ok_color_count   = np.sum((target_action_map >= 10) & (target_action_map <= 13))
         ok_gray_count    = np.sum(target_action_map == 243)
         total_ok         = ok_color_count + ok_gray_count
 
-        # 4. Total available payload capacity (in bits/pixels)
+        # 4. total available payload capacity (in bits/pixels)
         total_candidates = total_best + total_ok
 
-        print("--- HILL TARGET ACTION MAP SUMMARY ---")
-        print(f"Layer id            : {layer["id"]}")
+        # for HILL, we want to stay under .1 bpp if possible
+        max_best_bits = total_pixels * num_channels * 0.1
+        if(total_best > max_best_bits):
+            total_best_sum += max_best_bits
+            total_ok_sum += total_ok + total_best - max_best_bits
+        else:
+            total_best_sum += total_best
+            total_ok_sum += total_ok
+
+        ###
+        ### sort candidates by cost now
+        ###
+
+        def extract_and_sort(mask):
+            y_coords, x_coords = np.where(mask)
+            if len(y_coords) == 0:
+                return np.empty((0, 4), dtype=np.int32), np.empty((0,), dtype=np.float64)
+
+            actions = target_action_map[y_coords, x_coords]
+            costs = agg_cost_map[y_coords, x_coords]
+            l_col = np.full((len(x_coords), 1), local_layer_index, dtype=np.int32)
+
+            candidates = np.column_stack((l_col, x_coords, y_coords, actions)).astype(np.int32)
+
+            # Sort ascending by HILL cost
+            sort_order = np.argsort(costs)
+            return candidates[sort_order], costs[sort_order]
+
+        # extract "Best" and "OK" raw candidate lists
+        best_candidates, best_costs = extract_and_sort(best_mask)
+        ok_candidates, ok_costs = extract_and_sort(ok_mask)
+
+        # perform "waterfall" slicing where we get 0.1 bpp as our best
+
+        # first, fill our best bucket
+        num_best = len(best_candidates)
+        take_best = min(num_best, max_best_bits)
+
+        layer_best = best_candidates[:take_best]
+        layer_next_best = best_candidates[take_best:]  # if there's overflow from best quality
+
+        # next, if we have any left, fill with what's left
+        rem_cap = max_best_bits - take_best
+        num_ok = len(ok_candidates)
+        take_ok = min(num_ok, rem_cap) if rem_cap > 0 else 0
+
+        layer_ok = ok_candidates[:take_ok]
+        layer_next_ok = ok_candidates[take_ok:]  # if there's overflow
+
+        # to buckets as needed
+        if len(layer_best) > 0: 
+            best_bucket.append(layer_best)
+        if len(layer_ok) > 0: 
+            ok_bucket.append(layer_ok)
+        if len(layer_next_best) > 0: 
+            next_best_bucket.append(layer_next_best)
+        if len(layer_next_ok) > 0: 
+            next_ok_bucket.append(layer_next_ok)
+
+        print("--- HILL LAYER SUMMARY ---")
+        print(f"Layer id            : {layer["id"]} : {local_layer_index}")
         print(f"Total Canvas Pixels : {total_pixels:,}")
         print(f"Untouched / Discard : {untouched_count:,} ({untouched_count/total_pixels:.2%})")
         print(f"Best Color Pixels   : {best_color_count:,}")
@@ -202,18 +264,29 @@ def HILL_algo(layers, color_model):
         print(f"TOTAL OK POOL       : {total_ok:,} ({total_ok/total_pixels:.2%})")
         print(f"Total Embed Capacity: {total_candidates:,} pixels ({total_candidates/total_pixels:.2%})")
 
-        total_best_sum += total_best
-        total_ok_sum += total_ok
+    # now, create flat lists for our buckets
+    def safe_vstack(arr_list):
+        return np.vstack(arr_list) if arr_list else np.empty((0, 4), dtype=np.int32)
 
-    total_sum = total_best_sum + total_ok_sum
+    best = safe_vstack(best_bucket)
+    ok = safe_vstack(ok_bucket)
+    next_best = safe_vstack(next_best_bucket)
+    next_ok = safe_vstack(next_ok_bucket)
 
-    print()
-    print("--- HILL TOTAL SUMMARY ---")
-    print(f"Total best pixels:       : {total_best_sum}")
-    print(f"Total ok pixels:         : {total_ok_sum}")
-    print(f"Total pixels:            : {total_sum}")
+    print("\n--- HILL WATERFALL BUCKET SUMMARY ---")
+    print(f"1. Master BEST (Top Tier <= 0.1 bpp)     : {len(best):,}")
+    print(f"2. Master NEXT_BEST (Best Overflow)       : {len(next_best):,}")
+    print(f"   --> Total Primary (<= 0.1 bpp Pool)    : {len(best) + len(ok):,}")
+    print(f"3. Master OK   (Fill Tier <= 0.1 bpp)     : {len(ok):,}")
+    print(f"4. Master NEXT_OK   (OK Overflow)         : {len(next_ok):,}")
+    print(f"   --> Total Paint Layers Capacity            : {len(best) + len(ok) + len(next_best) + len(next_ok):,}")
 
-    return maps, total_best_sum, total_ok_sum
+    return {
+        "best": best,
+        "next_best": next_best,
+        "ok": ok,
+        "next_ok": next_ok
+    }
 
 def convert_layer_to_2d_arr(bytes_array, width, height, color_model):
     """ function to convert the bytearray into 2D arrays (1 for each channel, ignore alpha)
@@ -256,4 +329,3 @@ def convert_layer_to_2d_arr(bytes_array, width, height, color_model):
         )
 
     return color_channels
-
