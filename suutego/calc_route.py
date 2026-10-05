@@ -6,13 +6,12 @@
 """
 
 from . import hill
-import hashlib
 import numpy as np
 
-def calc_paint_layers(layers : list, local_id_map : dict, color_space : str):
+def calc_paint_layers(layers : dict, local_id_map : dict, color_space : str):
     """ This function takes info needed to perform HILL on paint layers
 
-        @param layers       - list of dictionaries of bytestrings + positions in image {bytes,x,y,w,h,id}
+        @param layers       - dict of dictionaries of bytestrings + positions in image {bytes,x,y,w,h,id}
         @param local_id_map - map of local to string IDs
         @param width        - width of the wider image
         @param height       - height of the wider image
@@ -34,30 +33,32 @@ def calc_vector_layers(layers : list, color_space : str):
     return None
 
 
-def calc_traversal_seed(layer_lists : list):
-    """ Calculate the PRNG traversal seed (hash)
+def calc_route(buckets : dict, seed : int):
+    """ This function scrambles "best", "next best", "ok", "next ok" buckets
 
-        At minimum this uses the starting x/y, width/height, and id of each
-        paint layer, but other attrs may also be considered.
+        Traversals will go in that order, but the traversal in each bucket
+        is randomized
 
-        @param layers    - list of dictionaries of bytestrings and positions in image
-        @param seed_plus - list of additional attrs to be used in seed generation
+        @param buckets - buckets to scramble
+        @param seed    - seed for PRNG scrambling
     """
-    seed_components = []
-    
-    for layer in layer_lists:
-        seed_components.append(f"node {layer["id"]}:{layer["width"]}x{layer["height"]}:{layer["x"]},{layer["y"]}")
+    # initialize the route
+    route = []
+    scrambled_parts = []
 
-    # create deterministic sha-256 hash
-    raw_key = "|".join(seed_components).encode('utf-8')
-    hash_digest = hashlib.sha256(raw_key).digest()
+    # start the rng
+    prng = np.random.default_rng(seed)
 
-    # create seed
-    seed = int.from_bytes(hash_digest[:8], byteorder='big')
+    # helper function to scramble our buckets
+    def scramble_bucket(bucket):
+        return prng.permutation(bucket)
 
-    return seed
+    # for each type of bucket now, in order
+    for key in ["best", "next_best", "ok", "next_ok"]:
+        if(len(buckets[key]) > 0):
+            scrambled_parts.append(scramble_bucket(buckets[key]))
 
+    # safely stack it up now, if there is anything
+    route = np.vstack(scrambled_parts) 
 
-def calc_route():
-    return
-
+    return route

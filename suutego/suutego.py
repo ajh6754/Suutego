@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QTabWidget, 
     QTextEdit, QLineEdit, QPushButton, QGroupBox, QMessageBox, QWidget
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QByteArray
 from . import calc_route, crypto
 
 """
@@ -21,7 +21,6 @@ TODO (in order)
 
 - encoding, decoding
     - at present just normal image layers
-        - HILL improvement - try to prioritize 10-12k or below per layer
     - other layer types later on
 
 - use of other layer types (really upgrades this to a "can't just do this on PNG" level)
@@ -32,6 +31,11 @@ TODO (in order)
         - 
     - filter mask?
 
+- HILL potential improvement
+    - good that we're staying below .1 bpp per layer however it's a bit off
+        - don't account for how this flip will look in the flattened image- might tip off a steganalyzer, maybe not
+        - this would mean using the flattened png reference is an easy way to catch something's off perhaps maybe
+
 """
 
 ###
@@ -39,23 +43,25 @@ TODO (in order)
 ###
 
 class SuutegoDialog(QDialog):
-    def __init__(self, parent, paint_layers, vector_layers, local_id_layer_mappings, doc_width, doc_height, color_model):
+    def __init__(self, parent, doc, paint_layers, vector_layers, local_id_layer_mappings, doc_width, doc_height, color_model):
         super().__init__(parent)
         self.setWindowTitle("Suutego - Multi-Layer Steganography Tool")
         self.resize(580, 550)
         
         # krita file data
+        self.doc = doc
         self.paint_layers = paint_layers
         self.vector_layers = vector_layers
         self.local_id_layer_mappings = local_id_layer_mappings
         self.doc_width = doc_width
         self.doc_height = doc_height
         self.color_model = color_model
+        self.layer_lists = {"paint" : paint_layers, "vector" : vector_layers}
 
         # state stored after calculating route
-        self.seed = None
+        self.all_buckets = {"best" : [], "next_best" : [], "ok" : [], "next_ok" : []}
         self.layers_analyzed = False
-        self.paint_layer_buckets = None
+        self.paint_layer_buckets = None # up to 4 buckets
         self.num_paint_best = 0
         self.num_paint_next_best = 0
         self.num_paint_ok = 0
@@ -154,6 +160,10 @@ class SuutegoDialog(QDialog):
                 # NOW unlock encode/decode
                 self.tabs.setEnabled(True)
 
+                # update our buckets
+                for bucket in self.paint_layer_buckets.keys():
+                    self.all_buckets[bucket].extend(self.paint_layer_buckets[bucket])
+
             # if desired this can be re-analyzed although there is little purpose
             self.btn_run_hill.setText("Re-analyze Image")
 
@@ -202,22 +212,66 @@ class SuutegoDialog(QDialog):
         return widget
 
     def on_encode_click(self):
-        message = self.encode_text.toPlainText()
+        # TODO fix max_chars to be usable across all layer types
+        max_chars = self.paint_max_chars # + vector + ...
 
-        if not message:
+        message = self.encode_text.toPlainText()
+        if(not message):
             QMessageBox.warning(self, "Warning", "Please enter a message to encode.")
             return
 
+        if(not self.layers_analyzed):
+            QMessageBox.warning(self, "Warning", "At least one pre-embedding analysis must be performed first.")
+            return
+
+        if(len(message) > max_chars):
+            QMessageBox.warning(self, "Warning", "Message is too long!")
+            return
+
+        # calculate a traversal seed
+        traversal_seed = crypto.calc_traversal_seed(self.layer_lists)
+
+        # calculate the appropriate route
+        route = calc_route.calc_route(self.all_buckets, traversal_seed)
+
         # encode
-        # success = crypto.encode(message, self.maps, self.seed)
+        new_layers = crypto.encode(route, message, self.layer_lists, self.local_id_layer_mappings, self.color_model)
+
+        # systematically replace each layer now
+        for type in new_layers.keys():
+            for id in new_layers[type].keys():
+                # convert bytes to Krita accepted format
+                layer = new_layers[type][id]
+                modified_bytes = layer["bytes_array"]
+                new_pixel_bytes = QByteArray(modified_bytes)
+
+                # retrieve relevant node
+                target_node = self.doc.nodeByUniqueID(id)
+
+                # write data back to layer in place
+                target_node.setPixelData(new_pixel_bytes, layer["x"], layer["y"], layer["width"], layer["height"])
+                self.doc.refreshProjection()
+
+        # refresh one last time?
+        self.doc.refreshProjection()
+
+        # tell Krita that the file now has unsaved changes
+        self.doc.setModified(True)
         
         QMessageBox.information(self, "Success", "Message successfully embedded into active layers!")
         self.accept()
 
     def on_decode_click(self):
+        # TODO make sure the buckets are actually obtained...
+
+        # calculate a traversal seed
+        traversal_seed = crypto.calc_traversal_seed(self.layer_lists)
+
+        # calculate the appropriate route
+        route = calc_route.calc_route(self.all_buckets, traversal_seed)
+
         # decode
-        # extracted_msg = crypto.decode(self.maps, self.seed)
-        extracted_msg = "Sample decoded message from stego pixels."
+        extracted_msg = crypto.decode(route, self.layer_lists, self.local_id_layer_mappings, self.color_model)
 
         if extracted_msg:
             self.decode_text.setPlainText(extracted_msg)
@@ -274,15 +328,15 @@ class SuutegoExtension(Extension):
         # create local id to Krita layer ID mappings (speedup later)
         index = 0
         local_id_layer_mappings = {}
-        for layer_list in [paint_layers, vector_layers]:
-            for layer in layer_list:
-                local_id_layer_mappings[index] = layer["id"]
-                local_id_layer_mappings[layer["id"]] = index
+        for layer_dictionary in [paint_layers, vector_layers]:
+            for layer_id in layer_dictionary.keys():
+                local_id_layer_mappings[index] = layer_id
+                local_id_layer_mappings[layer_id] = index
                 index += 1
 
         # Launch Custom UI Prompt
         main_window = app.activeWindow().qwindow()
-        dialog = SuutegoDialog(main_window, paint_layers, vector_layers, local_id_layer_mappings, doc_width, doc_height, color_model)
+        dialog = SuutegoDialog(main_window, doc, paint_layers, vector_layers, local_id_layer_mappings, doc_width, doc_height, color_model)
         dialog.exec_()
 
     def obtain_all_layers(self, nodes):
@@ -294,8 +348,8 @@ class SuutegoExtension(Extension):
                 - vector layers
                 - filter layers
         """
-        paint_layers = []
-        vector_layers = []
+        paint_layers = {}
+        vector_layers = {}
 
         for node in nodes:
             # get the children, if there are none then we're done
@@ -303,8 +357,8 @@ class SuutegoExtension(Extension):
 
             if(len(node_children) > 0):
                 new_paint_layers, new_vector_layers = self.obtain_all_layers(node_children)
-                paint_layers.extend(new_paint_layers)
-                vector_layers.extend(new_vector_layers)
+                paint_layers = paint_layers | new_paint_layers
+                vector_layers = vector_layers | new_vector_layers
             
             elif(node.type() == "paintlayer"):
                 # get pixel data
@@ -324,7 +378,7 @@ class SuutegoExtension(Extension):
                 bytes_array = bytearray(pixel_data)
 
                 # now append the raw bitmap
-                paint_layers.append({"bytes_array" : bytes_array, "x" : starting_x, "y" : starting_y, "width" : width, "height" : height, "id" : node.uniqueId()})
+                paint_layers[node.uniqueId()] = {"bytes_array" : bytes_array, "x" : starting_x, "y" : starting_y, "width" : width, "height" : height}
             
             elif(node.type() == "vectorlayer"):
                 # get all vector shapes inside this layer, if we have none skip 
@@ -341,7 +395,7 @@ class SuutegoExtension(Extension):
                     svg_list.append(shape.toSvg())
 
                 # grab the SVG representing this vector layer
-                vector_layers.append({"svg_list" : svg_list, "id" : node.uniqueId()})
+                vector_layers[node.uniqueId()] = {"svg_list" : svg_list, "id" : node.uniqueId()}
 
             elif(node.type() == "filllayer"):
                 print("TODO")
