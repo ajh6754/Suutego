@@ -11,16 +11,15 @@ Purpose:    To act as the Suutego initial load (grab all layers/bitmaps) before
 from krita import Krita, Extension
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QTabWidget, 
-    QTextEdit, QLineEdit, QPushButton, QGroupBox, QMessageBox, QWidget
+    QTextEdit, QCheckBox, QPushButton, QGroupBox, QMessageBox, QWidget
 )
 from PyQt5.QtCore import Qt, QByteArray
-from . import calc_route, crypto
+from . import calc_route, crypto, hill, vector
 
 """
 TODO (in order)
 
 - encoding, decoding
-    - at present just normal image layers
     - other layer types later on
 
 - use of other layer types (really upgrades this to a "can't just do this on PNG" level)
@@ -57,15 +56,21 @@ class SuutegoDialog(QDialog):
         self.doc_height = doc_height
         self.color_model = color_model
         self.layer_lists = {"paint" : paint_layers, "vector" : vector_layers}
+        self.type_checkboxes = {}
 
         # state stored after calculating route
         self.all_buckets = {"best" : [], "next_best" : [], "ok" : [], "next_ok" : []}
         self.layers_analyzed = False
         self.paint_layer_buckets = None # up to 4 buckets
+        self.vector_layer_buckets = None # up to 4 buckets?
         self.num_paint_best = 0
         self.num_paint_next_best = 0
         self.num_paint_ok = 0
         self.paint_max_chars = 0
+
+        # UI Toggles for Stego Modes/Layers
+        self.embed_paint = False
+        self.embed_vector = False
         
         self.init_ui()
 
@@ -73,19 +78,34 @@ class SuutegoDialog(QDialog):
         main_layout = QVBoxLayout()
 
         # first verify that the user wants to do this
-        analysis_group = QGroupBox("Perform modified HILL Route Analysis")
+        analysis_group = QGroupBox("Perform Route Analysis")
         analysis_layout = QVBoxLayout()
         
         intro_lbl = QLabel(
-            "Before embedding or decoding, run the modified HILL algorithm to "
-            "identify usable target pixels across all active layers."
+            "Before embedding or decoding, run the algorithm to "
+            "identify usable target data across all layers."
         )
         intro_lbl.setWordWrap(True)
         analysis_layout.addWidget(intro_lbl)
 
+        # based on what layer types were detected, have checkboxes for if a user wants to be specific
+        target_group = QGroupBox("Stego Targets")
+        target_layout = QHBoxLayout()
+
+        for l_type, layers in self.layer_lists.items():
+            cb = QCheckBox(f"Include {l_type.capitalize()} ({len(layers)})")
+            has_layers = len(layers) > 0
+            cb.setChecked(has_layers)
+            cb.setEnabled(has_layers)
+            target_layout.addWidget(cb)
+            self.type_checkboxes[l_type] = cb
+
+        target_group.setLayout(target_layout)
+        analysis_layout.addWidget(target_group)
+
         btn_layout = QHBoxLayout()
         self.btn_run_hill = QPushButton("Analyze Active File")
-        self.btn_run_hill.clicked.connect(self.run_hill_analysis)
+        self.btn_run_hill.clicked.connect(self.run_analysis)
         btn_layout.addWidget(self.btn_run_hill)
         analysis_layout.addLayout(btn_layout)
 
@@ -101,14 +121,31 @@ class SuutegoDialog(QDialog):
         self.tabs = QTabWidget()
         self.tabs.addTab(self.create_encode_tab(), "Encode")
         self.tabs.addTab(self.create_decode_tab(), "Decode")
-        self.tabs.setEnabled(False)  # Require verification first
+        self.tabs.setEnabled(False)  
         
         main_layout.addWidget(self.tabs)
         self.setLayout(main_layout)
 
-    def run_hill_analysis(self):
-        """ Runs calc_paint_layers after explicit user confirmation 
+    def get_active_layer_lists(self):
+        """ Returns only layer lists where the stego checkbox is checked.
         """
+        return {
+            l_type: layers 
+            for l_type, layers in self.layer_lists.items()
+            if self.type_checkboxes[l_type].isChecked()
+        }
+
+    def run_analysis(self):
+        """ Runs analysis on all layers after explicit user confirmation 
+        """
+        # Update embed toggles based on UI state
+        self.embed_paint = self.type_checkboxes["paint"].isChecked()
+        self.embed_vector = self.type_checkboxes["vector"].isChecked()
+
+        if not any([self.embed_paint, self.embed_vector]):
+            QMessageBox.warning(self, "Warning", "Please select at least one layer type to analyze.")
+            return
+
         reply = QMessageBox.question(
             self, 
             "Confirm Route Calculation",
@@ -118,26 +155,64 @@ class SuutegoDialog(QDialog):
         )
 
         if(reply == QMessageBox.Yes):
-            # paint layer calculation
-            self.paint_layer_buckets = calc_route.calc_paint_layers(
-                self.paint_layers, self.local_id_layer_mappings, self.color_model
-            )
-            self.layers_analyzed = True
+            # reset our buckets and analysis
+            self.all_buckets = {"best": [], "next_best": [], "ok": [], "next_ok": []}
+            self.layers_analyzed = False
+            self.paint_layer_buckets = None 
+            self.vector_layer_buckets = None
+            total_avail = 0
+            self.stats_label.setText("Status: Performing analysis...")
 
-            # get stats
-            self.num_paint_best = len(self.paint_layer_buckets["best"])
-            self.num_paint_next_best = len(self.paint_layer_buckets["next_best"])
-            self.num_paint_ok = len(self.paint_layer_buckets["ok"]) + len(self.paint_layer_buckets["next_ok"])
-            total_avail = self.num_paint_best + self.num_paint_next_best + self.num_paint_ok
+            # initial vars
+            approx_best_bytes = 0
+            approx_next_best_bytes = 0
+            approx_ok_bytes = 0
+
+            # paint layer calculation
+            if(self.embed_paint and self.paint_layers):
+                self.paint_layer_buckets = hill.HILL_algo(
+                    self.paint_layers, self.local_id_layer_mappings, self.color_model
+                )
+
+                # get stats
+                self.num_paint_best = len(self.paint_layer_buckets["best"])
+                self.num_paint_next_best = len(self.paint_layer_buckets["next_best"])
+                self.num_paint_ok = len(self.paint_layer_buckets["ok"]) + len(self.paint_layer_buckets["next_ok"])
+
+                approx_best_bytes += self.num_paint_best
+                approx_next_best_bytes += self.num_paint_best + self.num_paint_next_best
+                approx_ok_bytes += self.num_paint_best + self.num_paint_next_best + len(self.paint_layer_buckets["ok"])
+
+                total_avail += self.num_paint_best + self.num_paint_next_best + self.num_paint_ok
+                self.paint_max_chars = self.num_paint_best + self.num_paint_next_best + self.num_paint_ok
+
+            # vector layer calculation
+            if(self.embed_vector and self.vector_layers):
+            
+                self.vector_layer_buckets = vector.calc_vector_layers(
+                    self.vector_layers, self.local_id_layer_mappings
+                )
+
+                # get stats
+                self.num_vector_best = len(self.vector_layer_buckets["best"])
+                self.num_vector_ok = len(self.vector_layer_buckets["ok"]) + len(self.vector_layer_buckets["next_ok"])
+
+                approx_best_bytes += self.num_vector_best
+                approx_ok_bytes += self.num_vector_best + self.num_vector_ok
+
+                total_avail += self.num_vector_best + self.num_vector_ok
+                self.vector_max_chars = self.num_vector_best + self.num_vector_ok
+
+            self.layers_analyzed = True
 
             # update the UI for stats on how much we can add
             # the first 4 bytes will be a signature, next 4 is length of message, then payload
 
             total_avail = total_avail - 8
-            approx_best_bytes = (self.num_paint_best // 8) - 8
-            approx_next_best_bytes = ((self.num_paint_best + self.num_paint_next_best) // 8) - 8
+            approx_best_bytes = (approx_best_bytes // 8) - 8
+            approx_next_best_bytes = ((approx_next_best_bytes) // 8) - 8
+            approx_ok_bytes = ((approx_ok_bytes) // 8) - 8
             approx_bytes = (total_avail // 8) - 8
-            self.paint_max_chars = approx_bytes
 
             # if there literally isn't enough for a payload then stop here
             if(total_avail <= 0):
@@ -149,6 +224,7 @@ class SuutegoDialog(QDialog):
                 stats_string = f"<b>Best Pixels:</b> {self.num_paint_best:,} | <b>Total Available:</b> {total_avail:,}<br>" + \
                         f"<b>Est. Best Only Max Capacity:</b> ~{approx_best_bytes:,} characters<br>" + \
                         f"<b>Est. Next Best Max Capacity:</b> ~{approx_next_best_bytes:,} characters<br>" + \
+                        f"<b>Est. Ok Max Capacity:</b> ~{approx_next_best_bytes:,} characters<br>" + \
                         f"<b>Est. Total Payload Capacity:</b> ~{approx_bytes:,} characters"
 
                 if(approx_best_bytes < 10):
@@ -163,6 +239,8 @@ class SuutegoDialog(QDialog):
                 # update our buckets
                 for bucket in self.paint_layer_buckets.keys():
                     self.all_buckets[bucket].extend(self.paint_layer_buckets[bucket])
+                for bucket in self.vector_layer_buckets.keys():
+                    self.all_buckets[bucket].extend(self.vector_layer_buckets[bucket])
 
             # if desired this can be re-analyzed although there is little purpose
             self.btn_run_hill.setText("Re-analyze Image")
@@ -213,7 +291,7 @@ class SuutegoDialog(QDialog):
 
     def on_encode_click(self):
         # TODO fix max_chars to be usable across all layer types
-        max_chars = self.paint_max_chars # + vector + ...
+        max_chars = self.paint_max_chars + self.vector_max_chars
 
         message = self.encode_text.toPlainText()
         if(not message):
@@ -234,23 +312,42 @@ class SuutegoDialog(QDialog):
         # calculate the appropriate route
         route = calc_route.calc_route(self.all_buckets, traversal_seed)
 
+        #print(route)
+
         # encode
         new_layers = crypto.encode(route, message, self.layer_lists, self.local_id_layer_mappings, self.color_model)
 
         # systematically replace each layer now
         for type in new_layers.keys():
             for id in new_layers[type].keys():
-                # convert bytes to Krita accepted format
                 layer = new_layers[type][id]
-                modified_bytes = layer["bytes_array"]
-                new_pixel_bytes = QByteArray(modified_bytes)
 
-                # retrieve relevant node
-                target_node = self.doc.nodeByUniqueID(id)
+                if(type == "paint"):
+                    # convert bytes to Krita accepted format
+                    modified_bytes = layer["bytes_array"]
+                    new_pixel_bytes = QByteArray(modified_bytes)
 
-                # write data back to layer in place
-                target_node.setPixelData(new_pixel_bytes, layer["x"], layer["y"], layer["width"], layer["height"])
-                self.doc.refreshProjection()
+                    # retrieve relevant node
+                    target_node = self.doc.nodeByUniqueID(id)
+
+                    # write data back to layer in place
+                    target_node.setPixelData(new_pixel_bytes, layer["x"], layer["y"], layer["width"], layer["height"])
+                    self.doc.refreshProjection()
+                elif(type == "vector"):
+                    modified_svg = layer["svg"]
+
+                    # retrieve relevant node
+                    target_node = self.doc.nodeByUniqueID(id)
+
+                    # grab a reference to all the current (unmodified) shapes
+                    old_shapes = target_node.shapes()
+
+                    # inject the new steganographic shapes from our modified SVG string
+                    target_node.addShapesFromSvg(modified_svg)
+
+                    # delete the original shapes so only the stego ones remain
+                    for shape in old_shapes:
+                        shape.remove()
 
         # refresh one last time?
         self.doc.refreshProjection()
@@ -269,6 +366,8 @@ class SuutegoDialog(QDialog):
 
         # calculate the appropriate route
         route = calc_route.calc_route(self.all_buckets, traversal_seed)
+
+        #print(route)
 
         # decode
         extracted_msg = crypto.decode(route, self.layer_lists, self.local_id_layer_mappings, self.color_model)
@@ -388,14 +487,14 @@ class SuutegoExtension(Extension):
                     print(f"Layer '{node.name()}' is empty, ignoring...")
                     continue
 
-                # get an ordered list of shapes turned to SVG
-                svg_list = []
+                # # get an ordered list of shapes
+                # shape_list = []
 
-                for shape in shapes:
-                    svg_list.append(shape.toSvg())
+                # for shape in shapes:
+                #     shape_list.append(shape)
 
                 # grab the SVG representing this vector layer
-                vector_layers[node.uniqueId()] = {"svg_list" : svg_list, "id" : node.uniqueId()}
+                vector_layers[node.uniqueId()] = {"svg" : node.toSvg()}
 
             elif(node.type() == "filllayer"):
                 print("TODO")

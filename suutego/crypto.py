@@ -1,6 +1,6 @@
 """ Filename: crypto.py
 
-    Purpose: The application agnostic solution to perform encryption/decryption
+    Purpose: Functions for encryption/decryption
 
     @author Albert Jiro Hynes
 """
@@ -76,7 +76,44 @@ def encode(traversal_list : list, message : str, layer_lists : dict, local_id_di
             # replace with our new bytearray
             layer_lists["paint"][krita_layer_id]["bytes_array"] = layer_bytearray
         
-        # TODO vector layer
+        # vector layer
+        elif(krita_layer_id in layer_lists["vector"].keys()):
+            # action_info for vectors is [local_id, shape_index, start_index, end_index]
+            start_index = action_info[2]
+            end_index = action_info[3]
+            
+            svg_string = layer_lists["vector"][krita_layer_id]["svg"]
+            target_float_str = svg_string[start_index:end_index]
+            
+            # grab the last character as an integer
+            current_val = int(target_float_str[-1])
+            secret_bit = bits[bit_index]
+            
+            # LSB Substitution: 0 = Even, 1 = Odd
+            # KRITA STRIPS TRAILING ZEROS. WE MUST NEVER OUTPUT '0'.
+            if(secret_bit == 0):
+                if(current_val % 2 != 0):
+                    # it's odd, make it even
+                    new_val = 2 if current_val == 1 else current_val - 1
+                else:
+                    # already even, but if it happens to be 0, force it to 2
+                    new_val = 2 if current_val == 0 else current_val
+                    
+            else: # secret_bit == 1
+                if(current_val % 2 == 0):
+                    # it's even, make it odd
+                    new_val = 1 if current_val == 0 else current_val - 1
+                else:
+                    # it's already odd
+                    new_val = current_val
+                
+            # replace only the last character
+            new_float_str = target_float_str[:-1] + str(new_val)
+            
+            # stitch the updated SVG string back into the dictionary
+            layer_lists["vector"][krita_layer_id]["svg"] = svg_string[:start_index] + new_float_str + svg_string[end_index:]
+            
+            bit_index += 1
 
         # TODO filter mask
 
@@ -170,8 +207,22 @@ def decode(traversal_list : list, layer_lists : dict, local_id_dict : dict, colo
             extracted_bit = layer_bytearray[byte_index] & 0x01
             extracted_bits.append(extracted_bit)
 
-        
-        # TODO vector layer
+        # if this is a vector layer
+        elif(krita_layer_id in layer_lists["vector"].keys()):
+            # action_info for vectors is [local_id, shape_index, start_index, end_index]
+            start_index = action_info[2]
+            end_index = action_info[3]
+            
+            svg_string = layer_lists["vector"][krita_layer_id]["svg"]
+            target_float_str = svg_string[start_index:end_index]
+            
+            # grab the last character as an integer
+            last_char_val = int(target_float_str[-1])
+            
+            # decode the LSB parity: Even -> 0, Odd -> 1
+            extracted_bit = last_char_val % 2
+            
+            extracted_bits.append(extracted_bit)
 
         # TODO filter mask
 
@@ -209,7 +260,11 @@ def calc_traversal_seed(layer_lists : dict):
             layer = layer_lists["paint"][layer_id]
             seed_components.append(f"node {layer_id}:{layer["width"]}x{layer["height"]}:{layer["x"]},{layer["y"]}")
 
-    # TODO vector
+    # "vector"
+    if("vector" in layer_lists.keys()):
+        for layer_id in layer_lists["vector"].keys():
+            layer = layer_lists["vector"][layer_id]
+            seed_components.append(f"node {layer_id}")
 
     # TODO maybe fill/filter mask/layer
 

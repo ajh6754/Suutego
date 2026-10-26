@@ -5,33 +5,7 @@
     @author Albert Jiro Hynes
 """
 
-from . import hill
 import numpy as np
-
-def calc_paint_layers(layers : dict, local_id_map : dict, color_space : str):
-    """ This function takes info needed to perform HILL on paint layers
-
-        @param layers       - dict of dictionaries of bytestrings + positions in image {bytes,x,y,w,h,id}
-        @param local_id_map - map of local to string IDs
-        @param width        - width of the wider image
-        @param height       - height of the wider image
-        @param color_space  - could be RGBA or CMYKA or more
-    """
-    # calculate pixels/layers we CAN change, and then pixels we shouldn't
-    paint_layer_buckets = hill.HILL_algo(layers, local_id_map, color_space)
-
-    # return the buckets of edits to make
-    return paint_layer_buckets
-
-
-def calc_vector_layers(layers : list, color_space : str):
-    """ This function takes info needed to identify vector changes
-
-        @param layers       - list of dictionaries of layer IDs to SVGs
-        @param color_space  - could be RGBA or CMYKA or more
-    """
-    return None
-
 
 def calc_route(buckets : dict, seed : int):
     """ This function scrambles "best", "next best", "ok", "next ok" buckets

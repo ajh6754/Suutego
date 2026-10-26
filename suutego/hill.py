@@ -4,7 +4,6 @@ Filename: hill.py
 This runs a modified HILL strategy.
 
 first identify all possible pixels by running modified HILL on ALL pixels
-    modified HILL will ignore all LSB of every color channel, which works out for encoder/decoder
     modified HILL will run on every channel independently then pick the best (least) cost channel
         ALWAYS ignore the alpha (last)
 
