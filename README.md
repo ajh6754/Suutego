@@ -8,6 +8,4 @@ Run `python3 install_deps.py` to install all needed dependencies, Krita does not
 
 As a note, if you are running Krita on Windows and run the command using WSL, this is likely to fail. Run the command using PowerShell or Command Prompt instead.
 
-## Companion files
-
-To extract Krita layers as PNG for steganography detection testing, companion Python scripts for extracting each paint layer as PNG and each vector layer as SVG were created (located in /layer_extraction). It is not a plugin or part of the plugin, but the scripts were pasted and ran within the Krita Scripter environment.
+Open up any file in Krita and go to ```Tools > Suutego``` to use Suutego. 
