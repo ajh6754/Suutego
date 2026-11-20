@@ -42,7 +42,7 @@ def calc_vector_layers(layers : dict, local_id_map : dict):
         # find the C, c, S, s, Q, and q commands within the path
         # add a few checks to make sure we're only taking good ones
 
-        for shape_idx, path_match in enumerate(path_regex.finditer(svg)):
+        for shape_index, path_match in enumerate(path_regex.finditer(svg)):
             d_string = path_match.group(1)
             d_offset = path_match.start(1) 
 
@@ -107,7 +107,7 @@ def calc_vector_layers(layers : dict, local_id_map : dict):
                         
                         start_index = d_offset + token_match.start()
                         end_index = d_offset + token_match.end()
-                        row = [local_id, shape_idx, start_index, end_index]
+                        row = [local_id, shape_index, start_index, end_index]
                         
                         if(decimals >= 4):
                             # Best candidate: 4+ decimal places (extreme sub-pixel)

@@ -61,12 +61,13 @@ class SuutegoDialog(QDialog):
         # state stored after calculating route
         self.all_buckets = {"best" : [], "next_best" : [], "ok" : [], "next_ok" : []}
         self.layers_analyzed = False
-        self.paint_layer_buckets = None # up to 4 buckets
-        self.vector_layer_buckets = None # up to 4 buckets?
+        self.paint_layer_buckets = {} # up to 4 buckets
+        self.vector_layer_buckets = {} # up to 4 buckets?
         self.num_paint_best = 0
         self.num_paint_next_best = 0
         self.num_paint_ok = 0
         self.paint_max_chars = 0
+        self.vector_max_chars = 0
 
         # UI Toggles for Stego Modes/Layers
         self.embed_paint = False
@@ -158,8 +159,8 @@ class SuutegoDialog(QDialog):
             # reset our buckets and analysis
             self.all_buckets = {"best": [], "next_best": [], "ok": [], "next_ok": []}
             self.layers_analyzed = False
-            self.paint_layer_buckets = None 
-            self.vector_layer_buckets = None
+            self.paint_layer_buckets = {} 
+            self.vector_layer_buckets = {}
             total_avail = 0
             self.stats_label.setText("Status: Performing analysis...")
 
@@ -207,12 +208,11 @@ class SuutegoDialog(QDialog):
 
             # update the UI for stats on how much we can add
             # the first 4 bytes will be a signature, next 4 is length of message, then payload
-
-            total_avail = total_avail - 8
-            approx_best_bytes = (approx_best_bytes // 8) - 8
-            approx_next_best_bytes = ((approx_next_best_bytes) // 8) - 8
-            approx_ok_bytes = ((approx_ok_bytes) // 8) - 8
-            approx_bytes = (total_avail // 8) - 8
+            
+            approx_best_bytes = max(0, (approx_best_bytes // 8) - 8)
+            approx_next_best_bytes = max(0, (approx_next_best_bytes // 8) - 8)
+            approx_ok_bytes = max(0, (approx_ok_bytes // 8) - 8)
+            approx_bytes = max(0, (total_avail // 8) - 8)
 
             # if there literally isn't enough for a payload then stop here
             if(total_avail <= 0):
@@ -224,7 +224,7 @@ class SuutegoDialog(QDialog):
                 stats_string = f"<b>Best Pixels:</b> {self.num_paint_best:,} | <b>Total Available:</b> {total_avail:,}<br>" + \
                         f"<b>Est. Best Only Max Capacity:</b> ~{approx_best_bytes:,} characters<br>" + \
                         f"<b>Est. Next Best Max Capacity:</b> ~{approx_next_best_bytes:,} characters<br>" + \
-                        f"<b>Est. Ok Max Capacity:</b> ~{approx_next_best_bytes:,} characters<br>" + \
+                        f"<b>Est. Ok Max Capacity:</b> ~{approx_ok_bytes:,} characters<br>" + \
                         f"<b>Est. Total Payload Capacity:</b> ~{approx_bytes:,} characters"
 
                 if(approx_best_bytes < 10):
